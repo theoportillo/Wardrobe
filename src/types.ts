@@ -25,6 +25,8 @@ export interface Item {
   /** true si la imagen principal es el recorte; false si se usó la original. */
   bgRemoved: boolean;
   hasOriginal: boolean;
+  /** Posición del recorte (sin bordes) dentro de la foto original; permite retocarlo después. */
+  cutOffset?: { x: number; y: number };
 }
 
 export type ImageKind = 'full' | 'thumb' | 'orig';

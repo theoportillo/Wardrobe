@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { CutoutEditor } from '../components/CutoutEditor';
 import { emptyDraft, ItemForm, type Draft } from '../components/ItemForm';
 import { Icon, Progress } from '../components/ui';
 import { extractColor } from '../image/color';
-import { opaqueRatio, resizeToBlob, trimTransparent } from '../image/process';
+import { opaqueCopy, opaqueRatio, resizeToBlob, trimTransparent } from '../image/process';
 import { removeBg, type BgProgress } from '../image/removeBg';
 import { go, reportError, saveItem, toast, uid } from '../store';
 import type { Item, ItemColor } from '../types';
 
 type BgState =
   | { status: 'running'; progress: BgProgress | null }
+  /** `blob` es el recorte alineado con la foto original (sin recortar bordes, para poder retocarlo). */
   | { status: 'done'; blob: Blob }
   | { status: 'failed'; message: string };
 
@@ -26,6 +28,7 @@ export function Agregar() {
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editorStart, setEditorStart] = useState<Blob | null>(null);
   const token = useRef(0);
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -65,10 +68,9 @@ export function Agregar() {
     try {
       const raw = await removeBg(resized, (progress) => t === token.current && setBg({ status: 'running', progress }));
       if ((await opaqueRatio(raw)) < 0.02) throw new Error('El recorte no encontró la prenda');
-      const cut = await trimTransparent(raw);
       if (t !== token.current) return;
-      setBg({ status: 'done', blob: cut });
-      extractColor(cut).then((c) => t === token.current && applyDetected(c)).catch(() => {});
+      setBg({ status: 'done', blob: raw });
+      extractColor(raw).then((c) => t === token.current && applyDetected(c)).catch(() => {});
     } catch (err) {
       console.warn('Recorte falló', err);
       if (t !== token.current) return;
@@ -76,6 +78,22 @@ export function Agregar() {
       setBg({ status: 'failed', message: offline ? 'Sin conexión: la primera vez hace falta internet para bajar el modelo de recorte.' : 'No se pudo quitar el fondo. Se va a guardar la foto original.' });
       setUseOriginal(true);
     }
+  }
+
+  async function openEditor() {
+    if (!original) return;
+    try {
+      // Si el automático falló, se arranca con la foto entera y se borra a mano lo que sobra.
+      setEditorStart(bg?.status === 'done' ? bg.blob : await opaqueCopy(original));
+    } catch (err) { reportError(err, 'No pude abrir el editor'); }
+  }
+
+  function onEdited(b: Blob) {
+    token.current++; // descarta un recorte automático que todavía esté en curso
+    setEditorStart(null);
+    setBg({ status: 'done', blob: b });
+    setUseOriginal(false);
+    extractColor(b).then(applyDetected).catch(() => {});
   }
 
   function reset() {
@@ -91,7 +109,8 @@ export function Agregar() {
     if (!original || !draft.category) return;
     setSaving(true);
     try {
-      const cut = bg?.status === 'done' && !useOriginal ? bg.blob : null;
+      const trimmed = bg?.status === 'done' && !useOriginal ? await trimTransparent(bg.blob) : null;
+      const cut = trimmed?.blob ?? null;
       const full = cut ?? original;
       const thumb = await resizeToBlob(full, 360, !!cut, 0.8);
       const item: Item = {
@@ -106,6 +125,7 @@ export function Agregar() {
         lastWornAt: null,
         bgRemoved: !!cut,
         hasOriginal: !!cut,
+        cutOffset: trimmed ? { x: trimmed.x, y: trimmed.y } : undefined,
       };
       await saveItem(item, { full, thumb, orig: cut ? original : null });
       reset();
@@ -132,7 +152,7 @@ export function Agregar() {
           </label>
           {busy && <Progress ratio={null} label="Preparando la foto…" />}
           <ul class="tips muted">
-            <li>Apoyá la prenda sobre un fondo liso (cama, piso, pared) y con buena luz.</li>
+            <li>Apoyá la prenda sobre un fondo liso que contraste con ella (ropa clara sobre fondo oscuro y al revés), con buena luz.</li>
             <li>Que entre entera en la foto y sin otras cosas alrededor.</li>
             <li>Si la cámara no abre, revisá el permiso de cámara del navegador o elegí desde la galería.</li>
           </ul>
@@ -159,12 +179,21 @@ export function Agregar() {
       </div>
 
       {bg?.status === 'done' && (
-        <div class="segmented" role="tablist">
-          <button role="tab" aria-selected={!useOriginal} class={!useOriginal ? 'on' : ''} onClick={() => setUseOriginal(false)}>Recortada</button>
-          <button role="tab" aria-selected={useOriginal} class={useOriginal ? 'on' : ''} onClick={() => setUseOriginal(true)}>Usar original</button>
+        <div class="cut-actions">
+          <div class="segmented" role="tablist">
+            <button role="tab" aria-selected={!useOriginal} class={!useOriginal ? 'on' : ''} onClick={() => setUseOriginal(false)}>Recortada</button>
+            <button role="tab" aria-selected={useOriginal} class={useOriginal ? 'on' : ''} onClick={() => setUseOriginal(true)}>Original</button>
+          </div>
+          <button class="btn ghost" onClick={openEditor}>Retocar</button>
         </div>
       )}
-      {bg?.status === 'failed' && <p class="note warn">{bg.message}</p>}
+      {bg?.status === 'failed' && (
+        <div class="note warn">
+          {bg.message}
+          <div class="row"><button class="btn ghost small" onClick={openEditor}>Recortar a mano</button></div>
+        </div>
+      )}
+      {editorStart && <CutoutEditor original={original} cutout={editorStart} onDone={onEdited} onCancel={() => setEditorStart(null)} />}
 
       <ItemForm draft={draft} onChange={setDraft} detected={detected} />
 

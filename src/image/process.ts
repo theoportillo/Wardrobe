@@ -36,8 +36,11 @@ export async function resizeToBlob(src: Blob, max: number, alpha: boolean, quali
   return encode(c, alpha, quality);
 }
 
-/** Recorta el borde transparente sobrante (con un margen) para que la prenda llene la miniatura. */
-export async function trimTransparent(src: Blob, pad = 0.04): Promise<Blob> {
+/**
+ * Recorta el borde transparente sobrante (con un margen) para que la prenda llene la miniatura.
+ * Devuelve también dónde quedó el recorte dentro de la imagen original, para poder retocarlo después.
+ */
+export async function trimTransparent(src: Blob, pad = 0.04): Promise<{ blob: Blob; x: number; y: number }> {
   const bmp = await loadBitmap(src);
   const c = canvas(bmp.width, bmp.height);
   const ctx = c.getContext('2d', { willReadFrequently: true })!;
@@ -61,7 +64,25 @@ export async function trimTransparent(src: Blob, pad = 0.04): Promise<Blob> {
   x1 = Math.min(width - 1, x1 + p); y1 = Math.min(height - 1, y1 + p);
   const out = canvas(x1 - x0 + 1, y1 - y0 + 1);
   out.getContext('2d')!.drawImage(c, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
-  return encode(out, true, 0.9);
+  return { blob: await encode(out, true, 0.9), x: x0, y: y0 };
+}
+
+/** Vuelve a ubicar un recorte (ya sin bordes) sobre un lienzo del tamaño de la foto original. */
+export async function untrim(cut: Blob, original: Blob, x: number, y: number): Promise<Blob> {
+  const [o, c] = await Promise.all([loadBitmap(original), loadBitmap(cut)]);
+  const cv = canvas(o.width, o.height);
+  cv.getContext('2d')!.drawImage(c, x, y);
+  o.close(); c.close();
+  return toBlob(cv, 'image/png', 1);
+}
+
+/** Una imagen totalmente opaca: punto de partida para recortar a mano cuando el automático falla. */
+export async function opaqueCopy(src: Blob): Promise<Blob> {
+  const bmp = await loadBitmap(src);
+  const cv = canvas(bmp.width, bmp.height);
+  cv.getContext('2d')!.drawImage(bmp, 0, 0);
+  bmp.close();
+  return toBlob(cv, 'image/png', 1);
 }
 
 /** Proporción de píxeles opacos: sirve para detectar recortes que se comieron la prenda. */

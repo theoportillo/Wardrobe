@@ -1,11 +1,12 @@
 import { useState } from 'preact/hooks';
 import { label } from '../constants';
 import { getImage } from '../db/db';
-import { opaqueRatio, resizeToBlob, trimTransparent } from '../image/process';
+import { opaqueRatio, resizeToBlob, trimTransparent, untrim } from '../image/process';
 import { removeBg } from '../image/removeBg';
 import { plural, relDay } from '../lib/format';
 import { confirmDialog, removeItem, reportError, saveItem, toast, wearItems } from '../store';
 import type { Item } from '../types';
+import { CutoutEditor } from './CutoutEditor';
 import { ItemForm, type Draft } from './ItemForm';
 import { ItemImage, Progress, Sheet } from './ui';
 
@@ -14,6 +15,7 @@ export function ItemDetail({ item, onClose }: { item: Item | null; onClose: () =
   const [draft, setDraft] = useState<Draft | null>(null);
   const [working, setWorking] = useState<string | null>(null);
   const [imgVersion, setImgVersion] = useState(0);
+  const [retouch, setRetouch] = useState<{ original: Blob; cutout: Blob } | null>(null);
 
   const close = () => { setEditing(false); setDraft(null); onClose(); };
   if (!item) return null;
@@ -47,20 +49,40 @@ export function ItemDetail({ item, onClose }: { item: Item | null; onClose: () =
     setWorking(null);
   }
 
-  async function retryCut() {
+  /** Abre el editor con la foto original y el recorte alineado encima (o uno nuevo si no hay). */
+  async function startRetouch() {
     if (!item) return;
-    setWorking('Quitando el fondo…');
+    setWorking('Preparando el recorte…');
     try {
-      const full = await getImage(item.id, 'full');
-      if (!full) throw new Error('No encontré la foto');
-      const raw = await removeBg(full);
-      if ((await opaqueRatio(raw)) < 0.02) throw new Error('El recorte no encontró la prenda');
-      const cut = await trimTransparent(raw);
-      const thumb = await resizeToBlob(cut, 360, true, 0.8);
-      await saveItem({ ...item, bgRemoved: true, hasOriginal: true }, { full: cut, orig: full, thumb });
+      const [full, orig] = await Promise.all([getImage(item.id, 'full'), getImage(item.id, 'orig')]);
+      // Con la foto original a la vista (bgRemoved=false), las imágenes están intercambiadas.
+      const original = item.hasOriginal && item.bgRemoved ? orig : full;
+      const cut = item.hasOriginal ? (item.bgRemoved ? full : orig) : null;
+      if (!original) throw new Error('No encontré la foto original');
+      let aligned: Blob;
+      if (cut && item.cutOffset) aligned = await untrim(cut, original, item.cutOffset.x, item.cutOffset.y);
+      else {
+        setWorking('Quitando el fondo…');
+        aligned = await removeBg(original);
+        if ((await opaqueRatio(aligned)) < 0.02) aligned = original; // arranca con la foto entera
+      }
+      setRetouch({ original, cutout: aligned });
+    } catch (e) { reportError(e, 'No pude preparar el recorte'); }
+    setWorking(null);
+  }
+
+  async function saveRetouch(edited: Blob) {
+    if (!item || !retouch) return;
+    const { original } = retouch;
+    setRetouch(null);
+    setWorking('Guardando el recorte…');
+    try {
+      const t = await trimTransparent(edited);
+      const thumb = await resizeToBlob(t.blob, 360, true, 0.8);
+      await saveItem({ ...item, bgRemoved: true, hasOriginal: true, cutOffset: { x: t.x, y: t.y } }, { full: t.blob, orig: original, thumb });
       setImgVersion((v) => v + 1);
-      toast('Fondo quitado');
-    } catch (e) { reportError(e, 'No se pudo quitar el fondo'); }
+      toast('Recorte actualizado');
+    } catch (e) { reportError(e, 'No se pudo guardar el recorte'); }
     setWorking(null);
   }
 
@@ -93,9 +115,9 @@ export function ItemDetail({ item, onClose }: { item: Item | null; onClose: () =
                 {item.bgRemoved ? 'Usar foto original' : 'Usar recorte'}
               </button>
             )}
-            {!item.hasOriginal && (
-              <button class="btn ghost small" disabled={!!working} onClick={retryCut}>Quitar fondo</button>
-            )}
+            <button class="btn ghost small" disabled={!!working} onClick={startRetouch}>
+              {item.hasOriginal ? 'Retocar recorte' : 'Quitar fondo'}
+            </button>
           </div>
           <ItemForm draft={draft} onChange={(fn) => setDraft((d) => d && fn(d))} />
           <div class="row end">
@@ -123,6 +145,7 @@ export function ItemDetail({ item, onClose }: { item: Item | null; onClose: () =
           </div>
         </>
       )}
+      {retouch && <CutoutEditor original={retouch.original} cutout={retouch.cutout} onDone={saveRetouch} onCancel={() => setRetouch(null)} />}
     </Sheet>
   );
 }

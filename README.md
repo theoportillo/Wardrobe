@@ -51,7 +51,7 @@ Instalada, Chrome suele concederle almacenamiento persistente.
 **iPhone (Safari):** abrí la URL → botón Compartir → *Agregar a inicio*. Tiene que ser Safari.
 En iOS el almacenamiento persistente no está garantizado: exportá respaldos seguido.
 
-La primera vez que agregues una prenda se baja el modelo de recorte (~40 MB, mejor con wifi).
+La primera vez que agregues una prenda se baja el modelo de recorte (~90 MB, mejor con wifi).
 Después queda cacheado y funciona sin internet.
 
 ## Notas
